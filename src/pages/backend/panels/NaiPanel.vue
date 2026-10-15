@@ -563,8 +563,8 @@ async function reencodeVibe(vibe: NaiVibe) {
 
 /** 归拢/搜索/生效判定的纯逻辑在 backends/vibeGroups.ts,此处只做交互与落盘。 */
 const vibeSearch = ref('');
-/** 收起的组 key 集合(默认全展开;只存「收起」的,新建组自然是展开的)。 */
-const collapsedGroups = ref<Set<string>>(new Set());
+/** 只记录手动展开的组 key，所有分组默认折叠。 */
+const expandedGroups = ref<Set<string>>(new Set());
 
 const vibeGroups = computed(() => groupVibes(settings.nai.vibes, vibeSearch.value));
 
@@ -605,13 +605,13 @@ function onGroupPick(vibe: NaiVibe, value: string) {
 }
 
 function isGroupCollapsed(key: string): boolean {
-  return collapsedGroups.value.has(key);
+  return !expandedGroups.value.has(key);
 }
 
 function toggleGroup(key: string) {
-  const next = new Set(collapsedGroups.value);
+  const next = new Set(expandedGroups.value);
   if (!next.delete(key)) next.add(key);
-  collapsedGroups.value = next;
+  expandedGroups.value = next;
 }
 
 function groupActive(group: VibeGroup): boolean {
@@ -643,13 +643,13 @@ function renameGroup(group: VibeGroup) {
   for (const vibe of settings.nai.vibes) {
     if (vibe.group.trim() === group.name) vibe.group = name;
   }
-  // 收起状态跟着改名走(集合里存的是装箱 key),否则改完名字会莫名展开
+  // 展开状态跟着改名走，避免改名后意外折叠。
   const from = groupKey(group.name);
-  if (collapsedGroups.value.has(from)) {
-    const next = new Set(collapsedGroups.value);
+  if (expandedGroups.value.has(from)) {
+    const next = new Set(expandedGroups.value);
     next.delete(from);
     next.add(groupKey(name));
-    collapsedGroups.value = next;
+    expandedGroups.value = next;
   }
 }
 
