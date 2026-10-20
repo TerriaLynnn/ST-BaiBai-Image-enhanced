@@ -50,6 +50,7 @@ interface TestNode {
   offsetHeight: number;
   scrollIntoView: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
+  getRootNode: () => Node;
   getBoundingClientRect: () => { top: number; bottom: number; left: number; width: number };
   querySelectorAll: (selector: string) => TestNode[];
   querySelector: (selector: string) => TestNode | null;
@@ -65,6 +66,7 @@ function node(type: string): TestNode {
     type, props: {}, children: [], parent: null, scrollTop: 0, clientHeight: type === 'ul' ? 240 : 400, clientTop: 1, offsetHeight: 120,
     // 模拟 scrollIntoView 连带滚动宿主页面；此前实现会因此立即关闭菜单。
     scrollIntoView: vi.fn(() => listeners.get('scroll')?.({ composedPath: () => [] })), focus: vi.fn(),
+    getRootNode: () => document,
     getBoundingClientRect: () => {
       if (String(result.props.class ?? '').includes('bbi-select-menu')) {
         return { top: 138, bottom: 380, left: 20, width: 180 };
@@ -110,6 +112,8 @@ const renderer = createRenderer<TestNode, TestNode>({
 let app: ReturnType<typeof renderer.createApp>;
 let root: TestNode;
 let listeners: Map<string, (event: any) => void>;
+let windowListeners: Map<string, (event: any) => void>;
+let viewportListeners: Map<string, (event: any) => void>;
 function mount(render: () => any) {
   root = node('root');
   app = renderer.createApp({ render });
@@ -118,11 +122,21 @@ function mount(render: () => any) {
 }
 beforeEach(() => {
   listeners = new Map();
+  windowListeners = new Map();
+  viewportListeners = new Map();
   vi.stubGlobal('document', {
     addEventListener: (type: string, fn: (event: any) => void) => listeners.set(type, fn),
     removeEventListener: (type: string) => listeners.delete(type),
   });
-  vi.stubGlobal('window', { innerHeight: 800, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  vi.stubGlobal('window', {
+    innerHeight: 800,
+    addEventListener: (type: string, fn: (event: any) => void) => windowListeners.set(type, fn),
+    removeEventListener: (type: string) => windowListeners.delete(type),
+    visualViewport: {
+      addEventListener: (type: string, fn: (event: any) => void) => viewportListeners.set(type, fn),
+      removeEventListener: (type: string) => viewportListeners.delete(type),
+    },
+  });
   settings.nai.artistPresets = Array.from({ length: 50 }, (_, i) => ({
     id: `art_${i}`, name: `Artist ${i}`, prompt: 'artist:a', quality: '', negative: '',
   }));
@@ -147,12 +161,63 @@ describe('current artist navigation', () => {
     expect(find(root, '.bbi-select-menu')).toHaveLength(1);
     listeners.get('scroll')!({ composedPath: () => [] });
     await nextTick();
+    expect(find(root, '.bbi-select-menu')).toHaveLength(1);
+    trigger.props.onClick();
+    await nextTick();
     expect(find(root, '.bbi-select-menu')).toHaveLength(0);
     state.value = 'art_30';
     await nextTick();
     trigger.props.onClick();
     await nextTick();
     expect(find(root, '.bbi-select-menu')[0].scrollTop).toBe(31 * 34 - menu.clientHeight);
+  });
+
+  it('repositions instead of closing on background scrolling and iOS viewport changes', async () => {
+    mount(() => h(Select, { modelValue: 'art_49', options: settings.nai.artistPresets.map(p => ({ value: p.id, label: p.name })) }));
+    const trigger = find(root, 'button')[0];
+    trigger.props.onClick();
+    await nextTick();
+    const menu = find(root, '.bbi-select-menu')[0];
+    const scrollTop = menu.scrollTop;
+    trigger.getBoundingClientRect = () => ({ top: 200, bottom: 234, left: 20, width: 180 });
+    const event = { composedPath: () => [] };
+    listeners.get('scroll')!(event);
+    await nextTick();
+    expect(find(root, '.bbi-select-menu')[0]).toBe(menu);
+    windowListeners.get('resize')!(event);
+    await nextTick();
+    expect(find(root, '.bbi-select-menu')[0]).toBe(menu);
+    viewportListeners.get('resize')!(event);
+    viewportListeners.get('scroll')!(event);
+    await nextTick();
+    expect(find(root, '.bbi-select-menu')[0]).toBe(menu);
+    expect(menu.props.style.top).toBe('238px');
+    expect(menu.scrollTop).toBe(scrollTop);
+    // 外部点击仍可取消，并移除窗口及 visualViewport 监听。
+    listeners.get('pointerdown')!(event);
+    await nextTick();
+    expect(find(root, '.bbi-select-menu')).toHaveLength(0);
+    expect(windowListeners.size).toBe(0);
+    expect(viewportListeners.size).toBe(0);
+  });
+
+  it('removes Shadow DOM scroll listeners when unmounted with an open menu', async () => {
+    mount(() => h(Select, { modelValue: 'art_0', options: [{ value: 'art_0', label: 'Artist 0' }] }));
+    const shadowListeners = new Map<string, (event: any) => void>();
+    const shadow = {
+      addEventListener: (type: string, fn: (event: any) => void) => shadowListeners.set(type, fn),
+      removeEventListener: (type: string) => shadowListeners.delete(type),
+    };
+    const trigger = find(root, 'button')[0];
+    trigger.getRootNode = () => shadow as unknown as Node;
+    trigger.props.onClick();
+    await nextTick();
+    expect(shadowListeners.has('scroll')).toBe(true);
+    app.unmount();
+    expect(shadowListeners.size).toBe(0);
+    expect(listeners.size).toBe(0);
+    expect(windowListeners.size).toBe(0);
+    expect(viewportListeners.size).toBe(0);
   });
 
   it('keeps keyboard navigation inside the menu and leaves visible options still', async () => {

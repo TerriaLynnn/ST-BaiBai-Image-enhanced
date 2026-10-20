@@ -13,7 +13,8 @@ import { computed, nextTick, onBeforeUnmount, ref } from 'vue';
  * 由触发器的 getBoundingClientRect 推算,下方空间不足时向上翻。
  * 窗口元素平时无 transform(仅移动端拖动抽屉时临时有),fixed 相对视口成立。
  *
- * 交互:点外部 / Esc / 滚动 / 缩放关闭;↑↓ 移动高亮,Enter/Space 选中,Home/End 跳首尾。
+ * 交互:点外部 / Esc / 选中关闭;滚动与视口变化时跟随触发器定位。
+ * ↑↓ 移动高亮,Enter/Space 选中,Home/End 跳首尾。
  */
 const props = defineProps<{
   modelValue: string;
@@ -35,10 +36,11 @@ const current = computed(() => props.options.find(o => o.value === props.modelVa
 const MENU_GAP = 4;
 const MENU_MAX_HEIGHT = 240;
 const VIEWPORT_MARGIN = 8;
+let scrollRoot: Node | null = null;
 
-function openMenu() {
+function updateMenuPosition() {
   const el = trigger.value;
-  if (!el || open.value) return;
+  if (!el) return;
   const rect = el.getBoundingClientRect();
   // 估算菜单高度决定朝向:下方不够且上方更宽裕就向上翻
   const estimated = Math.min(MENU_MAX_HEIGHT, props.options.length * 34 + 10);
@@ -53,6 +55,12 @@ function openMenu() {
       ? { top: 'auto', bottom: `${window.innerHeight - rect.top + MENU_GAP}px` }
       : { top: `${rect.bottom + MENU_GAP}px`, bottom: 'auto' }),
   };
+}
+
+function openMenu() {
+  const el = trigger.value;
+  if (!el || open.value) return;
+  updateMenuPosition();
   activeIndex.value = Math.max(
     0,
     props.options.findIndex(o => o.value === props.modelValue),
@@ -62,27 +70,39 @@ function openMenu() {
   void nextTick(() => {
     if (open.value) scrollActiveIntoView();
   });
-  document.addEventListener('mousedown', onDocMousedown, true);
+  document.addEventListener('pointerdown', onDocPointerdown, true);
   document.addEventListener('keydown', onDocKeydown, true);
-  // 菜单是视口级 fixed,不随内容滚动;滚动/缩放时直接关掉,比重算位置干净。
-  // 菜单内部滚动不关闭,包括打开时自动定位当前项触发的滚动。
-  document.addEventListener('scroll', closeOnViewportChange, true);
-  window.addEventListener('resize', closeOnViewportChange);
+  // iOS WKWebView 的焦点/键盘切换可能在 click 后继续改变视口，不能据此关闭菜单。
+  // 后台聊天滚动也不代表用户要取消选择。只重新计算 fixed 菜单的位置。
+  document.addEventListener('scroll', onViewportChange, true);
+  const root = el.getRootNode();
+  // scroll 不穿过 Shadow DOM；面板内部滚动需要在所在根上监听。
+  if (root !== document) {
+    scrollRoot = root;
+    scrollRoot.addEventListener('scroll', onViewportChange, true);
+  }
+  window.addEventListener('resize', onViewportChange);
+  window.visualViewport?.addEventListener('resize', onViewportChange);
+  window.visualViewport?.addEventListener('scroll', onViewportChange);
 }
 
 function closeMenu(restoreFocus = false) {
   if (!open.value) return;
   open.value = false;
-  document.removeEventListener('mousedown', onDocMousedown, true);
+  document.removeEventListener('pointerdown', onDocPointerdown, true);
   document.removeEventListener('keydown', onDocKeydown, true);
-  document.removeEventListener('scroll', closeOnViewportChange, true);
-  window.removeEventListener('resize', closeOnViewportChange);
-  if (restoreFocus) trigger.value?.focus();
+  document.removeEventListener('scroll', onViewportChange, true);
+  scrollRoot?.removeEventListener('scroll', onViewportChange, true);
+  scrollRoot = null;
+  window.removeEventListener('resize', onViewportChange);
+  window.visualViewport?.removeEventListener('resize', onViewportChange);
+  window.visualViewport?.removeEventListener('scroll', onViewportChange);
+  if (restoreFocus) trigger.value?.focus({ preventScroll: true });
 }
 
-function closeOnViewportChange(event: Event) {
+function onViewportChange(event: Event) {
   if (menu.value && event.composedPath().includes(menu.value)) return;
-  closeMenu();
+  updateMenuPosition();
 }
 
 function toggle() {
@@ -95,7 +115,7 @@ function pick(option: { value: string }) {
   closeMenu(true);
 }
 
-function onDocMousedown(event: MouseEvent) {
+function onDocPointerdown(event: PointerEvent) {
   // composedPath 穿透 shadow root;点到触发器或菜单内部都不算外部
   const path = event.composedPath();
   if (trigger.value && path.includes(trigger.value)) return;
