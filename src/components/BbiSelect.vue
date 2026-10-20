@@ -104,9 +104,16 @@ function onDocMousedown(event: MouseEvent) {
 }
 
 function scrollActiveIntoView() {
-  menu.value
-    ?.querySelectorAll('.bbi-select-option')
-    [activeIndex.value]?.scrollIntoView({ block: 'nearest' });
+  const list = menu.value;
+  const option = list?.querySelectorAll<HTMLElement>('.bbi-select-option')[activeIndex.value];
+  if (!list || !option) return;
+  // scrollIntoView 会尝试滚动所有祖先（包括宿主聊天页），触发上面的滚动关闭逻辑。
+  // 只调整菜单自身，打开时定位当前项和键盘导航都不能移动外层页面。
+  const top = list.getBoundingClientRect().top + list.clientTop;
+  const bottom = top + list.clientHeight;
+  const rect = option.getBoundingClientRect();
+  if (rect.top < top) list.scrollTop += rect.top - top;
+  else if (rect.bottom > bottom) list.scrollTop += rect.bottom - bottom;
 }
 
 function onDocKeydown(event: KeyboardEvent) {

@@ -46,6 +46,7 @@ interface TestNode {
   parent: TestNode | null;
   scrollTop: number;
   clientHeight: number;
+  clientTop: number;
   offsetHeight: number;
   scrollIntoView: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
@@ -61,12 +62,23 @@ function find(root: TestNode, selector: string): TestNode[] {
 }
 function node(type: string): TestNode {
   const result: TestNode = {
-    type, props: {}, children: [], parent: null, scrollTop: 0, clientHeight: 400, offsetHeight: 120,
-    scrollIntoView: vi.fn(), focus: vi.fn(),
-    getBoundingClientRect: () => ({
-      top: type === 'button' || String(result.props.class ?? '').includes('am-scroll') ? 100 : 1500,
-      bottom: 134, left: 20, width: 180,
-    }),
+    type, props: {}, children: [], parent: null, scrollTop: 0, clientHeight: type === 'ul' ? 240 : 400, clientTop: 1, offsetHeight: 120,
+    // 模拟 scrollIntoView 连带滚动宿主页面；此前实现会因此立即关闭菜单。
+    scrollIntoView: vi.fn(() => listeners.get('scroll')?.({ composedPath: () => [] })), focus: vi.fn(),
+    getBoundingClientRect: () => {
+      if (String(result.props.class ?? '').includes('bbi-select-menu')) {
+        return { top: 138, bottom: 380, left: 20, width: 180 };
+      }
+      if (String(result.props.class ?? '').includes('bbi-select-option')) {
+        const items = result.parent!.querySelectorAll('.bbi-select-option');
+        const top = 139 + items.indexOf(result) * 34 - result.parent!.scrollTop;
+        return { top, bottom: top + 34, left: 20, width: 180 };
+      }
+      return {
+        top: type === 'button' || String(result.props.class ?? '').includes('am-scroll') ? 100 : 1500,
+        bottom: 134, left: 20, width: 180,
+      };
+    },
     querySelectorAll: selector => result.children.flatMap(child => find(child, selector)),
     querySelector: selector => result.querySelectorAll(selector)[0] ?? null,
   };
@@ -127,7 +139,9 @@ describe('current artist navigation', () => {
     await nextTick();
     const menu = find(root, '.bbi-select-menu')[0];
     const options = find(root, '.bbi-select-option');
-    expect(options[49].scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    expect(menu).toBeDefined();
+    expect(menu.scrollTop).toBe(50 * 34 - menu.clientHeight);
+    expect(options[49].scrollIntoView).not.toHaveBeenCalled();
     listeners.get('scroll')!({ composedPath: () => [menu] });
     await nextTick();
     expect(find(root, '.bbi-select-menu')).toHaveLength(1);
@@ -138,7 +152,29 @@ describe('current artist navigation', () => {
     await nextTick();
     trigger.props.onClick();
     await nextTick();
-    expect(find(root, '.bbi-select-option')[30].scrollIntoView).toHaveBeenCalled();
+    expect(find(root, '.bbi-select-menu')[0].scrollTop).toBe(31 * 34 - menu.clientHeight);
+  });
+
+  it('keeps keyboard navigation inside the menu and leaves visible options still', async () => {
+    mount(() => h(Select, { modelValue: 'art_0', options: settings.nai.artistPresets.map(p => ({ value: p.id, label: p.name })) }));
+    find(root, 'button')[0].props.onClick();
+    await nextTick();
+    const menu = find(root, '.bbi-select-menu')[0];
+    expect(menu.scrollTop).toBe(0);
+    const key = async (value: string) => {
+      listeners.get('keydown')!({ key: value, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+      await nextTick();
+    };
+    await key('ArrowDown');
+    expect(menu.scrollTop).toBe(0);
+    await key('End');
+    expect(menu.scrollTop).toBe(50 * 34 - menu.clientHeight);
+    await key('Home');
+    expect(menu.scrollTop).toBe(0);
+    expect(find(root, '.bbi-select-menu')).toHaveLength(1);
+    expect(find(root, '.bbi-select-option').every(option => !option.scrollIntoView.mock.calls.length)).toBe(true);
+    await key('Escape');
+    expect(find(root, '.bbi-select-menu')).toHaveLength(0);
   });
 
   it('centers the active library card on reopen and resets to the top when no artist is used', async () => {
